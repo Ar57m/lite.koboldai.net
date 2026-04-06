@@ -4548,6 +4548,9 @@ Current version indicated by LITEVER below.
 		adaptivep_target: -1.0,
 		adaptivep_decay: 0.9,
 		sampler_order: [6, 0, 1, 3, 4, 2, 5],
+		enable_backup: true,
+		backup_interval: 5,
+		backup_chars: 10,
 	};
 
 	const defaultsettings = JSON.parse(JSON.stringify(localsettings));
@@ -4842,6 +4845,7 @@ Current version indicated by LITEVER below.
 	</script>
 
 	<script id="main">
+
 	// Utility helper functions for data processing
 	function buf_to_b64(buffer) { //converts a buffer to base64 string
 		var binary = '';
@@ -28730,7 +28734,170 @@ Current version indicated by LITEVER below.
 		});
 	});
 	</script>
+<script>
+	(function() {
+		const DB_NAME = "KoboldAI_BackupDB";
+		const STORE_NAME = "backups";
+		const DB_VERSION = 1;
+		let db = null;
 
+		const backupKey = (typeof STORAGE_PREFIX !== 'undefined' ? STORAGE_PREFIX : "") + "input_backup";
+		const recoveryKey = backupKey + "_recovery_ghost";
+		const syncKey = backupKey + "_sync_signal";
+
+		const encodeText = (str) => btoa(encodeURIComponent(str));
+		const decodeText = (str) => decodeURIComponent(atob(str));
+
+		const dbRequest = indexedDB.open(DB_NAME, DB_VERSION);
+		dbRequest.onupgradeneeded = (e) => {
+			let database = e.target.result;
+			if (!database.objectStoreNames.contains(STORE_NAME)) {
+				database.createObjectStore(STORE_NAME);
+			}
+		};
+		dbRequest.onsuccess = (e) => {
+			db = e.target.result;
+			startDOMObserver();
+		};
+
+		function startDOMObserver() {
+			const observer = new MutationObserver(() => {
+				let textarea = document.getElementById("input_text");
+				let settingsCheckbox = document.getElementById("setting_enable_backup");
+
+				if (textarea && !textarea.dataset.backupBound) {
+					textarea.dataset.backupBound = "true";
+					setupBackup(textarea);
+				}
+
+				if (settingsCheckbox && !settingsCheckbox.dataset.loaded) {
+					settingsCheckbox.dataset.loaded = "true";
+					loadBackupSettings(); 
+				}
+
+				if (textarea && settingsCheckbox) {
+					observer.disconnect();
+				}
+			});
+			observer.observe(document.documentElement, { childList: true, subtree: true });
+		}
+
+		function setupBackup(textarea) {
+			const transaction = db.transaction([STORE_NAME], "readonly");
+			const store = transaction.objectStore(STORE_NAME);
+			const getRequest = store.get(backupKey);
+
+			getRequest.onsuccess = () => {
+				const savedData = getRequest.result;
+
+				const backupEnabled = localStorage.getItem('backup_enable') === 'true';
+				if (!backupEnabled) return;
+
+				if (savedData) {
+					setTimeout(() => {
+						try {
+							const decodedText = decodeText(savedData);
+							if (decodedText.length > 0) {
+								textarea.value = decodedText;
+								if (typeof update_submit_button === 'function') update_submit_button();
+								if (typeof chat_resize_input === 'function') chat_resize_input();
+								console.log("Input backup: Text successfully restored.");
+							}
+						} catch (e) {
+							console.error("Error decoding previous backup.");
+						}
+					}, 200);
+				}
+			};
+
+			let debounceTimer = null;
+			let lastSavedValue = textarea.value;
+
+			const saveToIndexedDB = () => {
+				const currentValue = textarea.value;
+				if (currentValue === lastSavedValue) return;
+
+				const transaction = db.transaction([STORE_NAME], "readwrite");
+				const store = transaction.objectStore(STORE_NAME);
+
+				if (lastSavedValue.length > 200 && currentValue.length < lastSavedValue.length * 0.5) {
+					store.put(encodeText(lastSavedValue), recoveryKey);
+					console.warn("WARNING: Large deletion detected! Previous text saved to emergency backup.");
+				}
+
+				store.put(encodeText(currentValue), backupKey);
+				lastSavedValue = currentValue;
+
+				localStorage.setItem(syncKey, Date.now().toString());
+			};
+
+			const handleInput = () => {
+				const backupEnabled = localStorage.getItem('backup_enable') === 'true';
+				if (!backupEnabled) return;
+
+				const charsSettings = parseInt(localStorage.getItem('setting_backup_chars')) || 50;
+				const diff = Math.abs(textarea.value.length - lastSavedValue.length);
+
+				if (diff >= charsSettings) {
+					saveToIndexedDB();
+					if (debounceTimer) clearTimeout(debounceTimer);
+					return;
+				}
+
+				if (debounceTimer) clearTimeout(debounceTimer);
+				debounceTimer = setTimeout(() => {
+					saveToIndexedDB();
+				}, 1000); 
+			};
+
+			textarea.addEventListener('input', handleInput);
+
+			window.addEventListener('storage', (e) => {
+				if (e.key === syncKey && document.activeElement !== textarea) {
+					const tx = db.transaction([STORE_NAME], "readonly");
+					const req = tx.objectStore(STORE_NAME).get(backupKey);
+					req.onsuccess = () => {
+						if (req.result !== undefined) {
+							textarea.value = decodeText(req.result);
+							if (typeof update_submit_button === 'function') update_submit_button();
+							if (typeof chat_resize_input === 'function') chat_resize_input();
+						}
+					};
+				}
+			});
+
+			window.addEventListener('beforeunload', () => {
+				if (localStorage.getItem('backup_enable') === 'true') {
+					saveToIndexedDB();
+				}
+			});
+		}
+	})();
+
+	function saveBackupSettings() {
+		localStorage.setItem('backup_enable', document.getElementById("setting_enable_backup").checked);
+		localStorage.setItem('setting_backup_interval', document.getElementById("setting_backup_interval").value);
+		localStorage.setItem('setting_backup_chars', document.getElementById("setting_backup_chars").value);
+	}
+
+	function loadBackupSettings() {
+		if (localStorage.getItem('backup_enable') === null) {
+			localStorage.setItem('backup_enable', 'false');
+		}
+
+		const enabled = localStorage.getItem('backup_enable') === 'true'; 
+		const interval = localStorage.getItem('setting_backup_interval') || 10; 
+		const chars = localStorage.getItem('setting_backup_chars') || 50;       
+
+		const elEnable = document.getElementById("setting_enable_backup");
+		const elInterval = document.getElementById("setting_backup_interval");
+		const elChars = document.getElementById("setting_backup_chars");
+
+		if (elEnable) elEnable.checked = enabled;
+		if (elInterval) elInterval.value = interval;
+		if (elChars) elChars.value = chars;
+	}
+</script>
 </head>
 
 <body id="outerbody" class="darkmode" onkeydown="handle_escape_button(event)" onbeforeunload="return handle_quit()">
@@ -30666,6 +30833,26 @@ Current version indicated by LITEVER below.
 							<div class="justifyleft">Disable CORS proxy streaming <span class="helpicon">?<span
 								class="helptext">Prevent the CORS proxy from streaming, if applicable.</span></span></div>
 							<input title="Proxy Disable Stream" type="checkbox" id="proxy_disable_stream" class="push-right">
+						</div>
+						<div>
+							<div class="settinglabel">
+								<div class="justifyleft">Enable Auto-Backup</div>
+								<input type="checkbox" id="setting_enable_backup" class="push-right" onchange="saveBackupSettings()">
+							</div>
+
+							<div class="settinglabel">
+								<div class="justifyleft">Backup interval (seconds)</div>
+								<input type="number" id="setting_backup_interval" class="form-control push-right" 
+									style="width: 60px; height: 24px; padding: 2px; text-align: center;" 
+									onchange="saveBackupSettings()">
+							</div>
+
+							<div class="settinglabel">
+								<div class="justifyleft">Backup every X characters</div>
+								<input type="number" id="setting_backup_chars" class="form-control push-right" 
+									style="width: 60px; height: 24px; padding: 2px; text-align: center;" 
+									onchange="saveBackupSettings()">
+							</div>
 						</div>
 					</div>
 
