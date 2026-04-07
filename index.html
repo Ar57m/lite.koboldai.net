@@ -4549,7 +4549,7 @@ Current version indicated by LITEVER below.
 		adaptivep_target: -1.0,
 		adaptivep_decay: 0.9,
 		sampler_order: [6, 0, 1, 3, 4, 2, 5],
-		enable_backup: true,
+		enable_backup: false,
 		backup_interval: 5,
 		backup_chars: 10,
 	};
@@ -16024,6 +16024,11 @@ Current version indicated by LITEVER below.
 		document.getElementById("img_steps").value = localsettings.img_steps;
 		document.getElementById("prompt_for_savename").checked = localsettings.prompt_for_savename;
 		document.getElementById("img_allownsfw").checked = localsettings.img_allownsfw;
+
+		document.getElementById("setting_enable_backup").checked = localsettings.enable_backup;
+		document.getElementById("setting_backup_interval").value = localsettings.backup_interval;
+		document.getElementById("setting_backup_chars").value = localsettings.backup_chars;
+
 		sampler_setting_tweaked();
 	}
 
@@ -16883,6 +16888,10 @@ Current version indicated by LITEVER below.
 		{
 			init_voice_typing();
 		}
+
+		localsettings.enable_backup = document.getElementById("setting_enable_backup").checked;
+		localsettings.backup_interval = parseInt(document.getElementById("setting_backup_interval").value) || 5;
+		localsettings.backup_chars = parseInt(document.getElementById("setting_backup_chars").value) || 10;
 
 		autosave();//need to always autosave, so that we can switch back to non persistent sessions
 		render_gametext(false);
@@ -28773,168 +28782,134 @@ Current version indicated by LITEVER below.
 	});
 	</script>
 <script>
-	(function() {
-		const DB_NAME = "KoboldAI_BackupDB";
-		const STORE_NAME = "backups";
-		const DB_VERSION = 1;
-		let db = null;
+    (function() {
+        const DB_NAME = "KoboldAI_BackupDB";
+        const STORE_NAME = "backups";
+        const DB_VERSION = 1;
+        let db = null;
 
-		const backupKey = (typeof STORAGE_PREFIX !== 'undefined' ? STORAGE_PREFIX : "") + "input_backup";
-		const recoveryKey = backupKey + "_recovery_ghost";
-		const syncKey = backupKey + "_sync_signal";
+        const backupKey = (typeof STORAGE_PREFIX !== 'undefined' ? STORAGE_PREFIX : "") + "input_backup";
+        const recoveryKey = backupKey + "_recovery_ghost";
+        const syncKey = backupKey + "_sync_signal";
 
-		const encodeText = (str) => btoa(encodeURIComponent(str));
-		const decodeText = (str) => decodeURIComponent(atob(str));
+        const encodeText = (str) => btoa(encodeURIComponent(str));
+        const decodeText = (str) => decodeURIComponent(atob(str));
 
-		const dbRequest = indexedDB.open(DB_NAME, DB_VERSION);
-		dbRequest.onupgradeneeded = (e) => {
-			let database = e.target.result;
-			if (!database.objectStoreNames.contains(STORE_NAME)) {
-				database.createObjectStore(STORE_NAME);
-			}
-		};
-		dbRequest.onsuccess = (e) => {
-			db = e.target.result;
-			startDOMObserver();
-		};
+        const dbRequest = indexedDB.open(DB_NAME, DB_VERSION);
+        dbRequest.onupgradeneeded = (e) => {
+            let database = e.target.result;
+            if (!database.objectStoreNames.contains(STORE_NAME)) {
+                database.createObjectStore(STORE_NAME);
+            }
+        };
 
-		function startDOMObserver() {
-			const observer = new MutationObserver(() => {
-				let textarea = document.getElementById("input_text");
-				let settingsCheckbox = document.getElementById("setting_enable_backup");
+        dbRequest.onsuccess = (e) => {
+            db = e.target.result;
+            startDOMObserver();
+        };
 
-				if (textarea && !textarea.dataset.backupBound) {
-					textarea.dataset.backupBound = "true";
-					setupBackup(textarea);
-				}
+        function startDOMObserver() {
+            const targetIds = ["input_text", "cht_inp", "corpo_cht_inp"];
+            
+            const observer = new MutationObserver(() => {
+                targetIds.forEach(id => {
+                    const textarea = document.getElementById(id);
+                    if (textarea && !textarea.dataset.backupBound) {
+                        textarea.dataset.backupBound = "true";
+                        setupBackup(textarea);
+                    }
+                });
+            });
 
-				if (settingsCheckbox && !settingsCheckbox.dataset.loaded) {
-					settingsCheckbox.dataset.loaded = "true";
-					loadBackupSettings(); 
-				}
+            observer.observe(document.body || document.documentElement, { 
+                childList: true, 
+                subtree: true 
+            });
+        }
 
-				if (textarea && settingsCheckbox) {
-					observer.disconnect();
-				}
-			});
-			observer.observe(document.documentElement, { childList: true, subtree: true });
-		}
+        function setupBackup(textarea) {
+            const transaction = db.transaction([STORE_NAME], "readonly");
+            const store = transaction.objectStore(STORE_NAME);
+            const getRequest = store.get(backupKey);
 
-		function setupBackup(textarea) {
-			const transaction = db.transaction([STORE_NAME], "readonly");
-			const store = transaction.objectStore(STORE_NAME);
-			const getRequest = store.get(backupKey);
+            getRequest.onsuccess = () => {
+                const savedData = getRequest.result;
+                // Use localsettings directly
+                if (!localsettings.enable_backup || !savedData) return;
 
-			getRequest.onsuccess = () => {
-				const savedData = getRequest.result;
+                setTimeout(() => {
+                    try {
+                        const decodedText = decodeText(savedData);
+                        if (decodedText.length > 0) {
+                            textarea.value = decodedText;
+                            if (typeof update_submit_button === 'function') update_submit_button();
+                            if (typeof chat_resize_input === 'function') chat_resize_input();
+                        }
+                    } catch (e) {
+                        console.error("Backup: Restore failed.");
+                    }
+                }, 300);
+            };
 
-				const backupEnabled = localStorage.getItem('backup_enable') === 'true';
-				if (!backupEnabled) return;
+            let debounceTimer = null;
+            let lastSavedValue = textarea.value;
 
-				if (savedData) {
-					setTimeout(() => {
-						try {
-							const decodedText = decodeText(savedData);
-							if (decodedText.length > 0) {
-								textarea.value = decodedText;
-								if (typeof update_submit_button === 'function') update_submit_button();
-								if (typeof chat_resize_input === 'function') chat_resize_input();
-								console.log("Input backup: Text successfully restored.");
-							}
-						} catch (e) {
-							console.error("Error decoding previous backup.");
-						}
-					}, 200);
-				}
-			};
+            const saveToIndexedDB = () => {
+                const currentValue = textarea.value;
+                if (currentValue === lastSavedValue) return;
 
-			let debounceTimer = null;
-			let lastSavedValue = textarea.value;
+                const transaction = db.transaction([STORE_NAME], "readwrite");
+                const store = transaction.objectStore(STORE_NAME);
 
-			const saveToIndexedDB = () => {
-				const currentValue = textarea.value;
-				if (currentValue === lastSavedValue) return;
+                if (lastSavedValue.length > 200 && currentValue.length < lastSavedValue.length * 0.5) {
+                    store.put(encodeText(lastSavedValue), recoveryKey);
+                }
 
-				const transaction = db.transaction([STORE_NAME], "readwrite");
-				const store = transaction.objectStore(STORE_NAME);
+                store.put(encodeText(currentValue), backupKey);
+                lastSavedValue = currentValue;
+                localStorage.setItem(syncKey, Date.now().toString());
+            };
 
-				if (lastSavedValue.length > 200 && currentValue.length < lastSavedValue.length * 0.5) {
-					store.put(encodeText(lastSavedValue), recoveryKey);
-					console.warn("WARNING: Large deletion detected! Previous text saved to emergency backup.");
-				}
+            const handleInput = () => {
+                if (!localsettings.enable_backup) return;
 
-				store.put(encodeText(currentValue), backupKey);
-				lastSavedValue = currentValue;
+                const diff = Math.abs(textarea.value.length - lastSavedValue.length);
 
-				localStorage.setItem(syncKey, Date.now().toString());
-			};
+                // Immediate save if character threshold is reached
+                if (diff >= localsettings.backup_chars) {
+                    saveToIndexedDB();
+                    if (debounceTimer) clearTimeout(debounceTimer);
+                    return;
+                }
 
-			const handleInput = () => {
-				const backupEnabled = localStorage.getItem('backup_enable') === 'true';
-				if (!backupEnabled) return;
+                // Otherwise, save after the interval (converted to ms)
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(saveToIndexedDB, localsettings.backup_interval * 1000); 
+            };
 
-				const charsSettings = parseInt(localStorage.getItem('setting_backup_chars')) || 50;
-				const diff = Math.abs(textarea.value.length - lastSavedValue.length);
+            textarea.addEventListener('input', handleInput);
 
-				if (diff >= charsSettings) {
-					saveToIndexedDB();
-					if (debounceTimer) clearTimeout(debounceTimer);
-					return;
-				}
+            window.addEventListener('storage', (e) => {
+                if (e.key === syncKey && document.activeElement !== textarea) {
+                    const tx = db.transaction([STORE_NAME], "readonly");
+                    const req = tx.objectStore(STORE_NAME).get(backupKey);
+                    req.onsuccess = () => {
+                        if (req.result !== undefined) {
+                            textarea.value = decodeText(req.result);
+                            if (typeof update_submit_button === 'function') update_submit_button();
+                            if (typeof chat_resize_input === 'function') chat_resize_input();
+                        }
+                    };
+                }
+            });
 
-				if (debounceTimer) clearTimeout(debounceTimer);
-				debounceTimer = setTimeout(() => {
-					saveToIndexedDB();
-				}, 1000); 
-			};
-
-			textarea.addEventListener('input', handleInput);
-
-			window.addEventListener('storage', (e) => {
-				if (e.key === syncKey && document.activeElement !== textarea) {
-					const tx = db.transaction([STORE_NAME], "readonly");
-					const req = tx.objectStore(STORE_NAME).get(backupKey);
-					req.onsuccess = () => {
-						if (req.result !== undefined) {
-							textarea.value = decodeText(req.result);
-							if (typeof update_submit_button === 'function') update_submit_button();
-							if (typeof chat_resize_input === 'function') chat_resize_input();
-						}
-					};
-				}
-			});
-
-			window.addEventListener('beforeunload', () => {
-				if (localStorage.getItem('backup_enable') === 'true') {
-					saveToIndexedDB();
-				}
-			});
-		}
-	})();
-
-	function saveBackupSettings() {
-		localStorage.setItem('backup_enable', document.getElementById("setting_enable_backup").checked);
-		localStorage.setItem('setting_backup_interval', document.getElementById("setting_backup_interval").value);
-		localStorage.setItem('setting_backup_chars', document.getElementById("setting_backup_chars").value);
-	}
-
-	function loadBackupSettings() {
-		if (localStorage.getItem('backup_enable') === null) {
-			localStorage.setItem('backup_enable', 'false');
-		}
-
-		const enabled = localStorage.getItem('backup_enable') === 'true'; 
-		const interval = localStorage.getItem('setting_backup_interval') || 10; 
-		const chars = localStorage.getItem('setting_backup_chars') || 50;       
-
-		const elEnable = document.getElementById("setting_enable_backup");
-		const elInterval = document.getElementById("setting_backup_interval");
-		const elChars = document.getElementById("setting_backup_chars");
-
-		if (elEnable) elEnable.checked = enabled;
-		if (elInterval) elInterval.value = interval;
-		if (elChars) elChars.value = chars;
-	}
+            window.addEventListener('beforeunload', () => {
+                if (localsettings.enable_backup) {
+                    saveToIndexedDB();
+                }
+            });
+        }
+    })();
 </script>
 </head>
 
@@ -30875,21 +30850,19 @@ Current version indicated by LITEVER below.
 						<div>
 							<div class="settinglabel">
 								<div class="justifyleft">Enable Auto-Backup</div>
-								<input type="checkbox" id="setting_enable_backup" class="push-right" onchange="saveBackupSettings()">
+								<input type="checkbox" id="setting_enable_backup" class="push-right">
 							</div>
 
 							<div class="settinglabel">
 								<div class="justifyleft">Backup interval (seconds)</div>
 								<input type="number" id="setting_backup_interval" class="form-control push-right" 
-									style="width: 60px; height: 24px; padding: 2px; text-align: center;" 
-									onchange="saveBackupSettings()">
+									style="width: 60px; height: 24px; padding: 2px; text-align: center;">
 							</div>
 
 							<div class="settinglabel">
 								<div class="justifyleft">Backup every X characters</div>
 								<input type="number" id="setting_backup_chars" class="form-control push-right" 
-									style="width: 60px; height: 24px; padding: 2px; text-align: center;" 
-									onchange="saveBackupSettings()">
+									style="width: 60px; height: 24px; padding: 2px; text-align: center;">
 							</div>
 						</div>
 					</div>
