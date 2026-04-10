@@ -28780,134 +28780,132 @@ Current version indicated by LITEVER below.
 	});
 	</script>
 <script>
-    (function() {
-        const DB_NAME = "KoboldAI_BackupDB";
-        const STORE_NAME = "backups";
-        const DB_VERSION = 1;
-        let db = null;
+(function() {
+    const DB_NAME = "KoboldAI_BackupDB";
+    const STORE_NAME = "backups";
+    const DB_VERSION = 1;
+    let db = null;
 
-        const backupKey = (typeof STORAGE_PREFIX !== 'undefined' ? STORAGE_PREFIX : "") + "input_backup";
-        const recoveryKey = backupKey + "_recovery_ghost";
-        const syncKey = backupKey + "_sync_signal";
+    const isBackupEnabled = () => {
+        return typeof localsettings !== 'undefined' && localsettings.enable_backup;
+    };
 
-        const encodeText = (str) => btoa(encodeURIComponent(str));
-        const decodeText = (str) => decodeURIComponent(atob(str));
+    const backupKey = (typeof STORAGE_PREFIX !== 'undefined' ? STORAGE_PREFIX : "") + "input_backup";
+    const syncKey = backupKey + "_sync_signal";
 
-        const dbRequest = indexedDB.open(DB_NAME, DB_VERSION);
-        dbRequest.onupgradeneeded = (e) => {
-            let database = e.target.result;
-            if (!database.objectStoreNames.contains(STORE_NAME)) {
-                database.createObjectStore(STORE_NAME);
-            }
-        };
+	const encodeText = (str) => btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+	const decodeText = (str) => new TextDecoder().decode(Uint8Array.from(atob(str), c => c.charCodeAt(0)));
 
-        dbRequest.onsuccess = (e) => {
-            db = e.target.result;
-            startDOMObserver();
-        };
+    const dbRequest = indexedDB.open(DB_NAME, DB_VERSION);
 
-        function startDOMObserver() {
-            const targetIds = ["input_text", "cht_inp", "corpo_cht_inp"];
-            
-            const observer = new MutationObserver(() => {
-                targetIds.forEach(id => {
-                    const textarea = document.getElementById(id);
-                    if (textarea && !textarea.dataset.backupBound) {
-                        textarea.dataset.backupBound = "true";
-                        setupBackup(textarea);
-                    }
-                });
-            });
-
-            observer.observe(document.body || document.documentElement, { 
-                childList: true, 
-                subtree: true 
-            });
+    dbRequest.onupgradeneeded = (e) => {
+        let database = e.target.result;
+        if (!database.objectStoreNames.contains(STORE_NAME)) {
+            database.createObjectStore(STORE_NAME);
         }
+    };
 
-        function setupBackup(textarea) {
-            const transaction = db.transaction([STORE_NAME], "readonly");
+    dbRequest.onsuccess = (e) => {
+        db = e.target.result;
+
+        setTimeout(startDOMObserver, 300);
+    };
+
+    dbRequest.onerror = () => console.error("Backup: IndexedDB failed to open.");
+
+    function startDOMObserver() {
+        const targetIds = ["input_text", "cht_inp", "corpo_cht_inp"];
+
+        const tryBind = () => {
+            targetIds.forEach(id => {
+                const textarea = document.getElementById(id);
+                if (textarea && !textarea.dataset.backupBound) {
+                    textarea.dataset.backupBound = "true";
+                    setupBackup(textarea);
+                }
+            });
+        };
+
+        tryBind();
+        setTimeout(tryBind, 500);
+        setTimeout(tryBind, 1000);
+
+        const observer = new MutationObserver(tryBind);
+
+        observer.observe(document.body || document.documentElement, {
+            childList: true,
+            subtree: true
+        });
+    }
+
+    function setupBackup(textarea) {
+        const transaction = db.transaction([STORE_NAME], "readonly");
+        const store = transaction.objectStore(STORE_NAME);
+        const getRequest = store.get(backupKey);
+
+        getRequest.onsuccess = () => {
+            const savedData = getRequest.result;
+            if (!isBackupEnabled() || !savedData) return;
+
+            setTimeout(() => {
+                try {
+                    const decodedText = decodeText(savedData);
+
+                    if (decodedText.length > 0 && textarea.value === "") {
+                        textarea.value = decodedText;
+
+                        if (typeof update_submit_button === 'function') update_submit_button();
+                        if (typeof chat_resize_input === 'function') chat_resize_input();
+                    }
+                } catch (e) {
+                    console.error("Backup: Restore failed.", e);
+                }
+            }, 800);
+        };
+
+        let debounceTimer = null;
+        let lastSavedValue = textarea.value;
+
+        const saveToIndexedDB = () => {
+            if (!db || !isBackupEnabled()) return;
+
+            const currentValue = textarea.value;
+            if (currentValue === lastSavedValue) return;
+
+            const transaction = db.transaction([STORE_NAME], "readwrite");
             const store = transaction.objectStore(STORE_NAME);
-            const getRequest = store.get(backupKey);
 
-            getRequest.onsuccess = () => {
-                const savedData = getRequest.result;
-                // Use localsettings directly
-                if (!localsettings.enable_backup || !savedData) return;
+            store.put(encodeText(currentValue), backupKey);
+            lastSavedValue = currentValue;
 
-                setTimeout(() => {
-                    try {
-                        const decodedText = decodeText(savedData);
-                        if (decodedText.length > 0) {
-                            textarea.value = decodedText;
-                            if (typeof update_submit_button === 'function') update_submit_button();
-                            if (typeof chat_resize_input === 'function') chat_resize_input();
-                        }
-                    } catch (e) {
-                        console.error("Backup: Restore failed.");
-                    }
-                }, 300);
-            };
+            localStorage.setItem(syncKey, Date.now().toString());
+        };
 
-            let debounceTimer = null;
-            let lastSavedValue = textarea.value;
+        textarea.addEventListener('input', () => {
+            if (!isBackupEnabled()) return;
 
-            const saveToIndexedDB = () => {
-                const currentValue = textarea.value;
-                if (currentValue === lastSavedValue) return;
+            const diff = Math.abs(textarea.value.length - lastSavedValue.length);
+            const charThreshold = localsettings.backup_chars || 10;
 
-                const transaction = db.transaction([STORE_NAME], "readwrite");
-                const store = transaction.objectStore(STORE_NAME);
-
-                if (lastSavedValue.length > 200 && currentValue.length < lastSavedValue.length * 0.5) {
-                    store.put(encodeText(lastSavedValue), recoveryKey);
-                }
-
-                store.put(encodeText(currentValue), backupKey);
-                lastSavedValue = currentValue;
-                localStorage.setItem(syncKey, Date.now().toString());
-            };
-
-            const handleInput = () => {
-                if (!localsettings.enable_backup) return;
-
-                const diff = Math.abs(textarea.value.length - lastSavedValue.length);
-
-                // Immediate save if character threshold is reached
-                if (diff >= localsettings.backup_chars) {
-                    saveToIndexedDB();
-                    if (debounceTimer) clearTimeout(debounceTimer);
-                    return;
-                }
-
-                // Otherwise, save after the interval (converted to ms)
+            if (diff >= charThreshold) {
+                saveToIndexedDB();
                 if (debounceTimer) clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(saveToIndexedDB, localsettings.backup_interval * 1000); 
-            };
+            } else {
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(saveToIndexedDB, (localsettings.backup_interval || 2) * 1000);
+            }
+        });
 
-            textarea.addEventListener('input', handleInput);
+        const saveNow = () => saveToIndexedDB();
 
-            window.addEventListener('storage', (e) => {
-                if (e.key === syncKey && document.activeElement !== textarea) {
-                    const tx = db.transaction([STORE_NAME], "readonly");
-                    const req = tx.objectStore(STORE_NAME).get(backupKey);
-                    req.onsuccess = () => {
-                        if (req.result !== undefined) {
-                            textarea.value = decodeText(req.result);
-                            if (typeof update_submit_button === 'function') update_submit_button();
-                            if (typeof chat_resize_input === 'function') chat_resize_input();
-                        }
-                    };
-                }
-            });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') saveNow();
+        });
 
-            window.addEventListener('beforeunload', () => {
-                if (localsettings.enable_backup) {
-                    saveToIndexedDB();
-                }
-            });
-        }
-    })();
+        window.addEventListener('pagehide', saveNow);
+        window.addEventListener('blur', saveNow);
+    }
+})();
 </script>
 </head>
 
