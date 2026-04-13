@@ -8452,7 +8452,13 @@ Current version indicated by LITEVER below.
 		}
 		else
 		{
-			gametext_arr.push(get_instructendplaceholder() + callresp);
+			let callresptxt = "";
+			if(!(gametext_arr.length>0 && gametext_arr[gametext_arr.length-1].trim().endsWith("{{[OUTPUT]}}")))
+			{
+				callresptxt = get_instructendplaceholder(); //add instruct tag if needed
+			}
+			callresptxt += JSON.stringify(callresp) + get_instructendplaceholder();
+			gametext_arr.push(callresptxt);
 		}
 	}
 	function parseMcpUrls() {
@@ -13671,7 +13677,7 @@ Current version indicated by LITEVER below.
 				document.getElementById("featherlessdesc").classList.remove("hidden");
 				document.getElementById("custom_oai_key").value = (localsettings.saved_featherless_key==dummy_api_key?"":localsettings.saved_featherless_key);
 				document.getElementById("custom_oai_endpoint").value = default_featherless_base;
-				try_fetch_oai_models_auto();
+				// try_fetch_oai_models_auto(); //no more autofetch for featherless, too many models!
 			}
 			else if(epchoice==9)
 			{
