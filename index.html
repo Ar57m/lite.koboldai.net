@@ -4554,6 +4554,9 @@ Current version indicated by LITEVER below.
 		adaptivep_target: -1.0,
 		adaptivep_decay: 0.9,
 		sampler_order: [6, 0, 1, 3, 4, 2, 5],
+		enable_backup: false,
+		backup_interval: 5,
+		backup_chars: 10,
 		custom_sampler_fields: {},
 	};
 
@@ -16146,6 +16149,9 @@ Current version indicated by LITEVER below.
 		document.getElementById("img_steps").value = localsettings.img_steps;
 		document.getElementById("prompt_for_savename").checked = localsettings.prompt_for_savename;
 		document.getElementById("img_allownsfw").checked = localsettings.img_allownsfw;
+		document.getElementById("setting_enable_backup").checked = localsettings.enable_backup;
+		document.getElementById("setting_backup_interval").value = localsettings.backup_interval;
+		document.getElementById("setting_backup_chars").value = localsettings.backup_chars;
 		sampler_setting_tweaked();
 	}
 
@@ -17011,6 +17017,10 @@ Current version indicated by LITEVER below.
 		{
 			init_voice_typing();
 		}
+
+		localsettings.enable_backup = document.getElementById("setting_enable_backup").checked;
+		localsettings.backup_interval = parseInt(document.getElementById("setting_backup_interval").value) || 5;
+		localsettings.backup_chars = parseInt(document.getElementById("setting_backup_chars").value) || 10;
 
 		autosave();//need to always autosave, so that we can switch back to non persistent sessions
 		render_gametext(false);
@@ -29081,7 +29091,134 @@ Current version indicated by LITEVER below.
 		});
 	});
 	</script>
+<script>
+(function() {
+    const DB_NAME = "KoboldAI_BackupDB";
+    const STORE_NAME = "backups";
+    const DB_VERSION = 1;
+    let db = null;
 
+    const isBackupEnabled = () => {
+        return typeof localsettings !== 'undefined' && localsettings.enable_backup;
+    };
+
+    const backupKey = (typeof STORAGE_PREFIX !== 'undefined' ? STORAGE_PREFIX : "") + "input_backup";
+    const syncKey = backupKey + "_sync_signal";
+
+	const encodeText = (str) => btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+	const decodeText = (str) => new TextDecoder().decode(Uint8Array.from(atob(str), c => c.charCodeAt(0)));
+
+    const dbRequest = indexedDB.open(DB_NAME, DB_VERSION);
+
+    dbRequest.onupgradeneeded = (e) => {
+        let database = e.target.result;
+        if (!database.objectStoreNames.contains(STORE_NAME)) {
+            database.createObjectStore(STORE_NAME);
+        }
+    };
+
+    dbRequest.onsuccess = (e) => {
+        db = e.target.result;
+
+        setTimeout(startDOMObserver, 300);
+    };
+
+    dbRequest.onerror = () => console.error("Backup: IndexedDB failed to open.");
+
+    function startDOMObserver() {
+        const targetIds = ["input_text", "cht_inp", "corpo_cht_inp"];
+
+        const tryBind = () => {
+            targetIds.forEach(id => {
+                const textarea = document.getElementById(id);
+                if (textarea && !textarea.dataset.backupBound) {
+                    textarea.dataset.backupBound = "true";
+                    setupBackup(textarea);
+                }
+            });
+        };
+
+        tryBind();
+        setTimeout(tryBind, 500);
+        setTimeout(tryBind, 1000);
+
+        const observer = new MutationObserver(tryBind);
+
+        observer.observe(document.body || document.documentElement, {
+            childList: true,
+            subtree: true
+        });
+    }
+
+    function setupBackup(textarea) {
+        const transaction = db.transaction([STORE_NAME], "readonly");
+        const store = transaction.objectStore(STORE_NAME);
+        const getRequest = store.get(backupKey);
+
+        getRequest.onsuccess = () => {
+            const savedData = getRequest.result;
+            if (!isBackupEnabled() || !savedData) return;
+
+            setTimeout(() => {
+                try {
+                    const decodedText = decodeText(savedData);
+
+                    if (decodedText.length > 0 && textarea.value === "") {
+                        textarea.value = decodedText;
+
+                        if (typeof update_submit_button === 'function') update_submit_button();
+                        if (typeof chat_resize_input === 'function') chat_resize_input();
+                    }
+                } catch (e) {
+                    console.error("Backup: Restore failed.", e);
+                }
+            }, 800);
+        };
+
+        let debounceTimer = null;
+        let lastSavedValue = textarea.value;
+
+        const saveToIndexedDB = () => {
+            if (!db || !isBackupEnabled()) return;
+
+            const currentValue = textarea.value;
+            if (currentValue === lastSavedValue) return;
+
+            const transaction = db.transaction([STORE_NAME], "readwrite");
+            const store = transaction.objectStore(STORE_NAME);
+
+            store.put(encodeText(currentValue), backupKey);
+            lastSavedValue = currentValue;
+
+            localStorage.setItem(syncKey, Date.now().toString());
+        };
+
+        textarea.addEventListener('input', () => {
+            if (!isBackupEnabled()) return;
+
+            const diff = Math.abs(textarea.value.length - lastSavedValue.length);
+            const charThreshold = localsettings.backup_chars || 10;
+
+            if (diff >= charThreshold) {
+                saveToIndexedDB();
+                if (debounceTimer) clearTimeout(debounceTimer);
+            } else {
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(saveToIndexedDB, (localsettings.backup_interval || 2) * 1000);
+            }
+        });
+
+        const saveNow = () => saveToIndexedDB();
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') saveNow();
+        });
+
+        window.addEventListener('pagehide', saveNow);
+        window.addEventListener('blur', saveNow);
+    }
+})();
+</script>
 </head>
 
 <body id="outerbody" class="darkmode" onkeydown="handle_escape_button(event)" onbeforeunload="return handle_quit()">
@@ -31046,6 +31183,24 @@ Current version indicated by LITEVER below.
 							<div class="justifyleft">Disable CORS proxy streaming <span class="helpicon">?<span
 								class="helptext">Prevent the CORS proxy from streaming, if applicable.</span></span></div>
 							<input title="Proxy Disable Stream" type="checkbox" id="proxy_disable_stream" class="push-right">
+						</div>
+						<div>
+							<div class="settinglabel">
+								<div class="justifyleft">Enable Auto-Backup</div>
+								<input type="checkbox" id="setting_enable_backup" class="push-right">
+							</div>
+
+							<div class="settinglabel">
+								<div class="justifyleft">Backup interval (seconds)</div>
+								<input type="number" id="setting_backup_interval" class="form-control push-right" 
+									style="width: 60px; height: 24px; padding: 2px; text-align: center;">
+							</div>
+
+							<div class="settinglabel">
+								<div class="justifyleft">Backup every X characters</div>
+								<input type="number" id="setting_backup_chars" class="form-control push-right" 
+									style="width: 60px; height: 24px; padding: 2px; text-align: center;">
+							</div>
 						</div>
 					</div>
 
