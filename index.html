@@ -7768,7 +7768,7 @@ Current version indicated by LITEVER below.
 		const codeContainer = btn.parentElement.querySelector('pre code');
 		let innercode = codeContainer.innerText;
 		//remove common language descriptiors from the start
-		let langsmatched = ["matlab","jsonc","powershell","ps1","haskell","hs","vbnet","vb","apache","apacheconf","makefile","mk","ini","protobuf","proto","typescript","tsx","markdown","md","mkdown","mkd","python","py","javascript","js","jsx","html","xhtml","xml","css","json","typescript","ts","tsx","bash","sh","zsh","java","csharp","cs","c","h","cpp","hpp","php","sql","ruby","rb","go","golang","kotlin","kt","swift","rust","rs","r","dart","scala","dockerfile","docker","yaml","yml","ini","toml","perl","pl","shell","console","powershell","ps1","lua","typescript","ts"];
+		let langsmatched = ["matlab","jsonc","powershell","ps1","haskell","hs","vbnet","vb","apache","apacheconf","makefile","mk","ini","protobuf","proto","typescript","tsx","markdown","md","mkdown","mkd","python","py","javascript","js","jsx","html","xhtml","xml","css","json","typescript","ts","tsx","bash","sh","zsh","java","csharp","cs","c","h","cpp","hpp","php","sql","ruby","rb","go","golang","kotlin","kt","swift","rust","rs","r","dart","scala","dockerfile","docker","yaml","yml","ini","toml","perl","pl","shell","console","powershell","ps1","lua","typescript","ts","patch","diff"];
 		for(let i = 0; i < langsmatched.length; ++i) {
 			let matcher = langsmatched[i]+"\n";
 			if (innercode.startsWith(matcher)) {
@@ -10382,6 +10382,11 @@ Current version indicated by LITEVER below.
 							load_tavern_jsonl(temparrs);
 							return;
 						}
+						else if(temparrs && temparrs.length>1 && temparrs[0].type=="session")
+						{
+							load_lcpp_jsonl(temparrs);
+							return;
+						}
 					}
 					catch(error)
 					{
@@ -10971,6 +10976,34 @@ Current version indicated by LITEVER below.
 			}
 		}
 		return false;
+	}
+
+	function load_lcpp_jsonl(obj)
+	{
+		if(localsettings.opmode!=4)
+		{
+			//force into instruct
+			localsettings.opmode = 4;
+		}
+		gametext_arr = [];
+		localsettings.gui_type_instruct = 2;
+		localsettings.inject_chatnames_instruct = false;
+		for(let i=0;i<obj.length;++i)
+		{
+			let curr = obj[i];
+			if(curr.type!="message")
+			{
+				continue;
+			}
+			if (curr.message && curr.message.role == "user") {
+				gametext_arr.push(get_instructstartplaceholder() + curr.message.content);
+			} else if (curr.message && curr.message.role == "assistant") {
+				gametext_arr.push(get_instructendplaceholder() + curr.message.content);
+			}
+		}
+		update_for_sidepanel();
+		render_gametext(true);
+		sync_multiplayer(true);
 	}
 
 	function load_tavern_jsonl(obj)
